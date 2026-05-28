@@ -57,7 +57,7 @@ void motorWrite(int motor, int pwr){
   }
 
   if (pwr < 0) pwr = abs(pwr);
-  ledcWrite(enablePin[motor], pwr);
+  ledcWrite(enablePin[motor], enablePin[motor] == ena2 ? pwr * 0.95 : pwr);
 }
 
 void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
@@ -99,5 +99,4 @@ void setup(){
 }
 
 void loop() {
-
 }
