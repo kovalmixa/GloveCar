@@ -1,18 +1,12 @@
-/*
---Это код машинки
-
-Проект Glove состоит из перчатки(манипулятора) и машинки (которым управляют)
-
-Машинка подключается к серверу , которая находится в перчатке
-Машинка получает строку типа "A0 B0 C0 D0 " где на месте 0 стоит число ШИМ которае подается на двигатель : A,B,C или D 
-
-*/
 #include <esp_now.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
+#include <esp_wifi.h>
 
 #define FOR_N(n) for (int i = 0; i < (n); i++)
 
-//пины логической схемы для управления драйвером двигателей
+#define ENABLE_DEBUG_LOG 0
+
 #define ena1 14
 #define in11 26
 #define in21 27
@@ -29,30 +23,40 @@
 #define in32 22
 #define in42 12
 
+WiFiUDP udp;
+const char* ssid = "CarDrone";
+const char* password = "";
+
+unsigned int localUdpPort = 4210;
+const int WIFI_CHANNEL = 3;
+
 int motorPin0[4] = { in32, in12, in31, in11 };
 int motorPin1[4] = { in42, in22, in41, in21 };
 int enablePin[4] = { enb2, ena2, enb1, ena1 };
 
-
 union MotorData {
-    struct {
-        signed char a, b, c, d;
-    };
-    signed char arr[4];
+  struct {
+    signed char a, b, c, d;
+  };
+  signed char arr[4];
 };
 MotorData motorData;
 
-void motorWrite(int motor, int pwr){
-  Serial.printf("motor=%d  pwr=%d\n", motor, pwr);
+//For log output
+bool isInfoWritten = false;
+unsigned long bootStartTime = 0;
+String bootInfo = ""; 
+
+void motorWrite(int motor, int pwr) {
   if (motor == 1 || motor == 0) pwr = (-1) * pwr;
   if (pwr > 0) {
-    digitalWrite(motorPin0[motor], 1);  // Ставим двигатель на поездку вперед
+    digitalWrite(motorPin0[motor], 1);
     digitalWrite(motorPin1[motor], 0);
   } else if (pwr < 0) {
-    digitalWrite(motorPin0[motor], 0);  // Ставим двигатель на поездку назад
+    digitalWrite(motorPin0[motor], 0);
     digitalWrite(motorPin1[motor], 1);
   } else {
-    digitalWrite(motorPin0[motor], 0);  // Ставим двигатель на тормоз
+    digitalWrite(motorPin0[motor], 0);
     digitalWrite(motorPin1[motor], 0);
   }
 
@@ -60,12 +64,20 @@ void motorWrite(int motor, int pwr){
   ledcWrite(enablePin[motor], enablePin[motor] == ena2 ? pwr * 0.97 : pwr);
 }
 
+// Прием ESP-NOW
 void onDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-  memcpy(&motorData, incomingData, sizeof(motorData));
-  FOR_N(4) motorWrite(i, motorData.arr[i] * 2);
+  if (len == sizeof(motorData)) {
+    memcpy(&motorData, incomingData, sizeof(motorData));
+    FOR_N(4) motorWrite(i, motorData.arr[i] * 2);
+
+#if ENABLE_DEBUG_LOG
+    Serial.printf("[ESP-NOW] Motors: A:%d B:%d C:%d D:%d\n", 
+      motorData.a * 2, motorData.b * 2, motorData.c * 2, motorData.d * 2);
+#endif
+  }
 }
 
-void setupMotors(){
+void setupMotors() {
   FOR_N(4) {
     pinMode(motorPin0[i], OUTPUT);
     digitalWrite(motorPin0[i], 0);
@@ -73,30 +85,73 @@ void setupMotors(){
     pinMode(motorPin1[i], OUTPUT);
     digitalWrite(motorPin1[i], 0);
 
-    // ledcAttach(enablePin[i], 40000, 8); 
-    ledcAttach(enablePin[i], 5000, 8); // Пин, частота 5кГц, разрешение 8 бит
+    ledcAttach(enablePin[i], 5000, 8);
     ledcWrite(enablePin[i], 0);
   }
 }
 
-void setup(){
+void setup() {
   Serial.begin(921600);
-  Serial.println("Start!");
+  bootStartTime = millis();
 
-  WiFi.mode(WIFI_STA);
-
-  // Init ESP-NOW
-  if (esp_now_init() != ESP_OK){
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
-  
   setupMotors();
 
-  // Once ESPNow is successfully Init, we will register for recv CB to
-  // get recv packer info
+  //Wi-Fi init
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(ssid, password, WIFI_CHANNEL, 0, 4);
+  esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
+
+  bootInfo += "\n================ BOOT LOG ================\n";
+  bootInfo += "Access point: " + String(ssid) + "\n";
+  bootInfo += "IP address:   " + WiFi.softAPIP().toString() + "\n";
+  bootInfo += "Wi-Fi ch:     " + String(WIFI_CHANNEL) + "\n";
+
+  //UDP init
+  udp.begin(localUdpPort);
+  bootInfo += "UDP server:   Port " + String(localUdpPort) + "\n";
+
+  //ESP-NOW init
+  if (esp_now_init() != ESP_OK) {
+    bootInfo += "ESP-NOW Status: FAILED!\n";
+    bootInfo += "==========================================\n";
+    return;
+  }
+
   esp_now_register_recv_cb(esp_now_recv_cb_t(onDataRecv));
+  bootInfo += "ESP-NOW Status: OK\n";
+  bootInfo += "==========================================\n";
+}
+
+void processUDP() {
+  int packetSize = udp.parsePacket();
+  if (packetSize) {
+    char packetBuffer[255];
+    int len = udp.read(packetBuffer, 255);
+    if (len > 0) packetBuffer[len] = 0;
+
+    int valA = 0, valB = 0, valC = 0, valD = 0;
+    if (sscanf(packetBuffer, "A%d B%d C%d D%d", &valA, &valB, &valC, &valD) == 4) {
+      motorWrite(0, valA);
+      motorWrite(1, valB);
+      motorWrite(2, valC);
+      motorWrite(3, valD);
+
+#if ENABLE_DEBUG_LOG
+      Serial.printf("[UDP] Motors: A:%d B:%d C:%d D:%d\n", valA, valB, valC, valD);
+#endif
+    }
+    else{
+#if ENABLE_DEBUG_LOG
+      Serial.printf("Custom packet came: %s\n", packetBuffer);
+#endif
+    }
+  }
 }
 
 void loop() {
+  if (!isInfoWritten && (millis() - bootStartTime >= 3000)) {
+    Serial.println(bootInfo);
+    isInfoWritten = true;
+  }
+  processUDP();
 }
