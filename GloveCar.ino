@@ -6,6 +6,7 @@
 #define FOR_N(n) for (int i = 0; i < (n); i++)
 
 #define ENABLE_DEBUG_LOG 0
+#define ENABLE_UDP 1
 
 #define ena1 14
 #define in11 26
@@ -22,7 +23,6 @@
 #define enb2 23
 #define in32 22
 #define in42 12
-
 WiFiUDP udp;
 const char* ssid = "CarDrone";
 const char* password = "";
@@ -96,8 +96,13 @@ void setup() {
 
   setupMotors();
 
+  //Modem sleep off
+  WiFi.setSleep(false);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
   //Wi-Fi init
   WiFi.mode(WIFI_AP_STA);
+#if ENABLE_UDP
   WiFi.softAP(ssid, password, WIFI_CHANNEL, 0, 4);
   esp_wifi_set_channel(WIFI_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
@@ -109,6 +114,7 @@ void setup() {
   //UDP init
   udp.begin(localUdpPort);
   bootInfo += "UDP server:   Port " + String(localUdpPort) + "\n";
+#endif
 
   //ESP-NOW init
   if (esp_now_init() != ESP_OK) {
@@ -149,9 +155,11 @@ void processUDP() {
 }
 
 void loop() {
+#if ENABLE_UDP
   if (!isInfoWritten && (millis() - bootStartTime >= 3000)) {
     Serial.println(bootInfo);
     isInfoWritten = true;
   }
   processUDP();
+#endif
 }
